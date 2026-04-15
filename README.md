@@ -1,3 +1,5 @@
+<img width="1400" height="400" alt="1400x400" src="https://github.com/user-attachments/assets/915029bd-f7a0-4442-9041-d6d46dca7320" />
+
 # @convstack/service-sdk
 
 Shared SDK for ConvStack services. Provides manifest DSL, request handlers, auth helpers, DB utilities, and Vite config.
