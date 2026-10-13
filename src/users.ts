@@ -3,8 +3,22 @@
  * Cached for 10 minutes per user ID.
  */
 
+import { lanyardFetch } from "./lanyard";
+
 const cache = new Map<string, { name: string; expires: number }>();
 const CACHE_TTL = 10 * 60 * 1000;
+
+let warnedAt = 0;
+
+// every name on a page fails the same way; one line a minute says why
+function warnUnresolved(reason: string) {
+	const now = Date.now();
+	if (now - warnedAt < 60_000) return;
+	warnedAt = now;
+	console.warn(
+		`[service-sdk] can't resolve user names from lanyard: ${reason}`,
+	);
+}
 
 /**
  * Resolve a user ID to a display name via Lanyard.
@@ -18,19 +32,15 @@ export async function resolveUserName(userId: string): Promise<string> {
 		return cached.name;
 	}
 
-	const lanyardUrl = process.env.LANYARD_URL || "http://localhost:3000";
-	const serviceKey = process.env.LANYARD_SERVICE_KEY;
-
-	if (!serviceKey) {
-		return truncateId(userId);
-	}
-
 	try {
-		const response = await fetch(`${lanyardUrl}/api/users/${userId}`, {
-			headers: { Authorization: `ServiceKey ${serviceKey}` },
-		});
+		const response = await lanyardFetch(
+			`/api/users/${encodeURIComponent(userId)}`,
+		);
 
 		if (!response.ok) {
+			if (response.status !== 404) {
+				warnUnresolved(`lanyard answered ${response.status}`);
+			}
 			return truncateId(userId);
 		}
 
@@ -39,22 +49,28 @@ export async function resolveUserName(userId: string): Promise<string> {
 
 		cache.set(userId, { name, expires: Date.now() + CACHE_TTL });
 		return name;
-	} catch {
+	} catch (err) {
+		warnUnresolved(err instanceof Error ? err.message : String(err));
 		return truncateId(userId);
 	}
 }
 
 /**
- * Resolve multiple user IDs to names in parallel.
+ * Resolve multiple user IDs to names, ten at a time.
  */
 export async function resolveUserNames(
 	userIds: string[],
 ): Promise<Map<string, string>> {
 	const unique = [...new Set(userIds)];
-	const entries = await Promise.all(
-		unique.map(async (id) => [id, await resolveUserName(id)] as const),
-	);
-	return new Map(entries);
+	const names = new Map<string, string>();
+	for (let i = 0; i < unique.length; i += 10) {
+		const batch = unique.slice(i, i + 10);
+		const resolved = await Promise.all(batch.map(resolveUserName));
+		batch.forEach((id, n) => {
+			names.set(id, resolved[n]);
+		});
+	}
+	return names;
 }
 
 function truncateId(id: string): string {

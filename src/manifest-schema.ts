@@ -97,37 +97,65 @@ export const widgetDefinitionSchema = z.object({
  * Page sections
  * ========================================================================== */
 
-export const pageSectionSchema = z.object({
-	type: z.enum([
-		"data-table",
-		"form",
-		"detail",
-		"widget-grid",
-		"action-bar",
-		"two-factor",
-		"passkey-manager",
-		"markdown",
-		"markdown-editor",
-		"search",
-		"cards",
-		"tabs",
-		"stats-row",
-		"callout",
-		"empty-state",
-		"hero",
-		"timeline",
-		"calendar-month",
-		"calendar-day",
-		"calendar-grid",
-		"agenda",
-		"upcoming-strip",
-		"approval-queue",
-		"kanban",
-		"custom",
-	]),
-	endpoint: z.string().max(500),
-	config: z.record(z.string(), jsonValueSchema),
-});
+// empty (tabs, callout and empty-state carry none) or a path on the service's
+// own host: no "//", backslash or whitespace, which URL parsing would turn
+// into another host, and no "." or ".." segment (%2e too) before the query,
+// which it would resolve into another path
+const sectionEndpointSchema = z
+	.string()
+	.max(500)
+	.regex(
+		/^$|^(?![^?#]*\/(?:\.|%2[eE]){1,2}(?:[/?#]|$))\/(?![/\\])[^\s\\]*$/,
+		"Section endpoints must be empty or a path starting with a single /, without . or .. segments",
+	);
+
+export const pageSectionSchema = z
+	.object({
+		type: z.enum([
+			"data-table",
+			"form",
+			"detail",
+			"widget-grid",
+			"action-bar",
+			"two-factor",
+			"passkey-manager",
+			"markdown",
+			"markdown-editor",
+			"search",
+			"cards",
+			"tabs",
+			"stats-row",
+			"callout",
+			"empty-state",
+			"hero",
+			"timeline",
+			"calendar-month",
+			"calendar-day",
+			"calendar-grid",
+			"agenda",
+			"upcoming-strip",
+			"approval-queue",
+			"kanban",
+			"custom",
+		]),
+		endpoint: sectionEndpointSchema,
+		config: z.record(z.string(), jsonValueSchema),
+	})
+	.superRefine((section, ctx): void => {
+		// tab sections sit inside config, which nothing else checks, yet the
+		// dashboard fetches them on the server
+		if (section.type !== "tabs") return;
+		const parsed = tabsConfigSchema.safeParse(section.config);
+		if (parsed.success) return;
+		for (const issue of parsed.error.issues) {
+			ctx.addIssue({
+				code: "custom",
+				message: issue.message,
+				path: ["config", ...issue.path],
+				input: section.config,
+			});
+		}
+	});
 
 export const pageDefinitionSchema = z.object({
 	path: z.string().min(1).max(200),
@@ -147,7 +175,7 @@ export const uiManifestSchema = z.object({
 	icon: z.string().min(1).max(50),
 	// Optional per-service accent color (hex or OKLCH).
 	accentColor: z.string().max(64).optional(),
-	version: z.string().max(20).default("1"),
+	version: z.string().min(1).max(20),
 	navigation: z.array(navigationItemSchema).max(30),
 	widgets: z.array(widgetDefinitionSchema).max(50),
 	pages: z.array(pageDefinitionSchema).max(50),
@@ -163,7 +191,8 @@ export type UIManifest = z.infer<typeof uiManifestSchema>;
 
 /* ============================================================================
  * Section config types — shape of section.config per section type. Not
- * validated at the manifest layer; the dashboard casts to them at render time.
+ * validated at the manifest layer, except tabs (pageSectionSchema checks the
+ * sections inside); the dashboard casts to them at render time.
  * ========================================================================== */
 
 export const badgeValueSchema = z.object({
@@ -323,6 +352,8 @@ export const formConfigSchema = z.object({
 				// Renders <input type="date"> — date only. Wire value is
 				// ISO date string YYYY-MM-DD.
 				"date",
+				// Renders a colour picker next to a hex box. Wire value is #rrggbb.
+				"color",
 			]),
 			required: z.boolean().optional(),
 			placeholder: z.string().optional(),
@@ -339,6 +370,17 @@ export const formConfigSchema = z.object({
 	submitLabel: z.string().optional(),
 	submitEndpoint: z.string().optional(),
 	method: z.string().optional(),
+	// A live preview drawn beside the form from its current values. The
+	// endpoint turns those values into the tokens the preview paints with.
+	preview: z
+		.object({
+			kind: z.literal("theme"),
+			endpoint: sectionEndpointSchema.refine(
+				(endpoint) => endpoint !== "",
+				"A preview needs an endpoint",
+			),
+		})
+		.optional(),
 });
 export type FormConfig = z.infer<typeof formConfigSchema>;
 

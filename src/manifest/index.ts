@@ -5,6 +5,7 @@ import type { UIManifest } from "../types";
 
 export {
 	checkboxesField,
+	colorField,
 	dateField,
 	datetimeField,
 	emailField,

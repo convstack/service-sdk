@@ -2,6 +2,7 @@
  * Service self-registration via Lanyard heartbeat.
  */
 
+import { lanyardBaseUrl } from "./lanyard-url";
 import type { UIManifest } from "./types";
 
 export interface RegisterServiceOptions {
@@ -13,6 +14,49 @@ export interface RegisterServiceOptions {
 	serviceKey?: string;
 }
 
+const NO_KEY =
+	"LANYARD_SERVICE_KEY is not set: not registering, and every request will be answered 503 until it is";
+
+// the heartbeat carries the service key: it never follows a redirect, and
+// a lanyard that doesn't answer doesn't hold startup forever
+function heartbeat(
+	lanyardUrl: string,
+	serviceKey: string,
+	manifest: UIManifest,
+) {
+	return fetch(`${lanyardUrl}/api/services/heartbeat`, {
+		method: "POST",
+		headers: {
+			Authorization: `ServiceKey ${serviceKey}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({ status: "healthy", uiManifest: manifest }),
+		redirect: "error",
+		signal: AbortSignal.timeout(5_000),
+	});
+}
+
+// lanyard's own words help, the key must never be among them
+async function refusal(response: Response, serviceKey: string) {
+	const text = (await response.text()).replaceAll(serviceKey, "<service key>");
+	return `(${response.status}): ${text}`;
+}
+
+/** Lanyard still answers 200 when it ignores a manifest that doesn't validate. */
+async function warnAboutIgnoredManifest(
+	name: string,
+	response: Response,
+): Promise<boolean> {
+	const body = (await response.json().catch(() => null)) as {
+		manifestIssues?: string[];
+	} | null;
+	if (!body?.manifestIssues?.length) return false;
+	console.warn(
+		`[${name}] lanyard ignored the manifest:\n  ${body.manifestIssues.join("\n  ")}`,
+	);
+	return true;
+}
+
 /**
  * Register a service with Lanyard by sending a heartbeat with the UI manifest.
  * Call this on service startup.
@@ -20,36 +64,31 @@ export interface RegisterServiceOptions {
 export async function registerService(
 	options: RegisterServiceOptions,
 ): Promise<void> {
-	const lanyardUrl =
-		options.lanyardUrl || process.env.LANYARD_URL || "http://localhost:3000";
+	const lanyardUrl = lanyardBaseUrl(options.lanyardUrl);
 	const serviceKey = options.serviceKey || process.env.LANYARD_SERVICE_KEY;
 
 	if (!serviceKey) {
-		console.warn("LANYARD_SERVICE_KEY not set — skipping registration");
+		console.warn(NO_KEY);
 		return;
 	}
 
 	try {
-		const response = await fetch(`${lanyardUrl}/api/services/heartbeat`, {
-			method: "POST",
-			headers: {
-				Authorization: `ServiceKey ${serviceKey}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				status: "healthy",
-				uiManifest: options.manifest,
-			}),
-		});
+		const response = await heartbeat(lanyardUrl, serviceKey, options.manifest);
 
 		if (response.ok) {
-			console.log(`${options.manifest.name} registered with Lanyard`);
+			if (!(await warnAboutIgnoredManifest(options.manifest.name, response))) {
+				console.log(`${options.manifest.name} registered with Lanyard`);
+			}
 		} else {
-			const text = await response.text();
-			console.warn(`Registration failed (${response.status}): ${text}`);
+			console.warn(
+				`Registration failed ${await refusal(response, serviceKey)}`,
+			);
 		}
 	} catch (error) {
-		console.warn("Failed to register with Lanyard:", error);
+		console.warn(
+			"Failed to register with Lanyard:",
+			error instanceof Error ? error.message : error,
+		);
 	}
 }
 
@@ -66,36 +105,26 @@ export async function registerService(
  */
 export function createSelfRegister(manifest: UIManifest): () => Promise<void> {
 	return async function selfRegister() {
-		const LANYARD_URL = process.env.LANYARD_URL ?? "http://localhost:3000";
+		const LANYARD_URL = lanyardBaseUrl();
 		const SERVICE_KEY = process.env.LANYARD_SERVICE_KEY;
 		if (!SERVICE_KEY) {
-			console.warn(
-				`[${manifest.name}] LANYARD_SERVICE_KEY missing — skipping self-register`,
-			);
+			console.warn(`[${manifest.name}] ${NO_KEY}`);
 			return;
 		}
 		try {
-			const response = await fetch(`${LANYARD_URL}/api/services/heartbeat`, {
-				method: "POST",
-				headers: {
-					Authorization: `ServiceKey ${SERVICE_KEY}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					status: "healthy",
-					uiManifest: manifest,
-				}),
-			});
+			const response = await heartbeat(LANYARD_URL, SERVICE_KEY, manifest);
 			if (!response.ok) {
 				console.warn(
-					`[${manifest.name}] self-register failed:`,
-					await response.text(),
+					`[${manifest.name}] self-register failed ${await refusal(response, SERVICE_KEY)}`,
 				);
-			} else {
+			} else if (!(await warnAboutIgnoredManifest(manifest.name, response))) {
 				console.log(`[${manifest.name}] registered with lanyard`);
 			}
 		} catch (err) {
-			console.warn(`[${manifest.name}] self-register error:`, err);
+			console.warn(
+				`[${manifest.name}] self-register error:`,
+				err instanceof Error ? err.message : err,
+			);
 		}
 	};
 }

@@ -47,7 +47,7 @@ export function defineServiceConfig(options: {
 	const port = options.port ?? 5050;
 	const manifestPath = options.manifestPath ?? "src/lib/manifest.ts";
 	const registerModule =
-		options.registerModule ?? "~/server/services/self-register";
+		options.registerModule ?? "/src/server/services/self-register.ts";
 	const registerFunction =
 		options.registerFunction ?? `register${toPascalCase(slug)}`;
 

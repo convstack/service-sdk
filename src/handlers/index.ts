@@ -1,6 +1,7 @@
 import type { z } from "zod";
+import { checkProof, type Principal } from "../proof";
 import { buildHandlerContext, type HandlerContext } from "./context";
-import { errorToResponse } from "./errors";
+import { errorToResponse, httpError, ServiceError } from "./errors";
 
 export type { HandlerContext } from "./context";
 export { buildHandlerContext } from "./context";
@@ -13,6 +14,8 @@ export interface CreateHandlerOptions<TDb, TInput, TOutput> {
 	output?: z.ZodType<TOutput>;
 	/** The service's drizzle DB instance, injected into every handler's ctx. */
 	db?: TDb;
+	/** Answer without lanyard's proof; only for health checks, which lanyard calls without one. */
+	skipAuth?: boolean;
 	/** Handler body. Gets typed ctx + validated input, returns typed output. */
 	handler: (ctx: HandlerContext<TDb> & { input: TInput }) => Promise<TOutput>;
 }
@@ -41,10 +44,26 @@ export function createHandler<
 		params?: Record<string, string>;
 	}): Promise<Response> => {
 		try {
-			// 1. Build context from proxy headers
-			const ctx = buildHandlerContext<TDb>(request, options.db as TDb);
+			// 1. Check lanyard's proof and build the context from it
+			let principal: Principal | null = null;
+			if (!options.skipAuth) {
+				const proof = await checkProof(request);
+				if (!proof.ok) {
+					throw new ServiceError(
+						proof.status,
+						proof.status === 401 ? "UNAUTHORIZED" : "UNAVAILABLE",
+						proof.error,
+					);
+				}
+				principal = proof.principal;
+			}
+			const ctx = buildHandlerContext<TDb>(
+				request,
+				options.db as TDb,
+				principal,
+			);
 
-			// 2. Parse input: merge query + path params + body
+			// 2. Parse input: merge query + body + path params
 			const url = new URL(request.url, "http://localhost");
 			const queryEntries = Object.fromEntries(url.searchParams.entries());
 			let bodyEntries: Record<string, unknown> = {};
@@ -53,18 +72,31 @@ export function createHandler<
 				request.method !== "HEAD" &&
 				request.headers.get("content-type")?.includes("json")
 			) {
-				try {
-					bodyEntries = await request.json();
-				} catch {
-					// Empty or malformed body — fine, leave bodyEntries empty
+				const text = await request.text();
+				if (text) {
+					let parsed: unknown;
+					try {
+						parsed = JSON.parse(text);
+					} catch {
+						throw httpError.badRequest("Request body is not valid JSON");
+					}
+					if (
+						typeof parsed !== "object" ||
+						parsed === null ||
+						Array.isArray(parsed)
+					) {
+						throw httpError.badRequest("Request body must be a JSON object");
+					}
+					bodyEntries = parsed as Record<string, unknown>;
 				}
 			}
 
-			// Merge order: query → path → body (body wins on collision)
+			// Merge order: query → body → path. The path wins: it is what the
+			// route was matched on, and a body key must not point it elsewhere.
 			const rawInput = {
 				...queryEntries,
-				...(params ?? {}),
 				...bodyEntries,
+				...(params ?? {}),
 			};
 
 			const parsedInput = options.input
@@ -79,7 +111,19 @@ export function createHandler<
 
 			// 4. Validate output (dev-only if desired, but runs always if schema provided)
 			if (options.output) {
-				options.output.parse(result);
+				const checked = options.output.safeParse(result);
+				// the handler's own mistake, not the caller's
+				if (!checked.success) {
+					console.error(
+						"[service-sdk] handler answer doesn't match its output schema:",
+						checked.error.issues,
+					);
+					throw new ServiceError(
+						500,
+						"INTERNAL_ERROR",
+						"Internal server error",
+					);
+				}
 			}
 
 			// 5. Serialize to JSON response

@@ -12,7 +12,8 @@ interface FormField {
 		| "password"
 		| "checkboxes"
 		| "search"
-		| "file";
+		| "file"
+		| "color";
 	required?: boolean;
 	placeholder?: string;
 	options?: Array<{ label: string; value: string }>;
@@ -50,6 +51,14 @@ export function selectField(
 	opts: { required?: boolean } = {},
 ): FormField {
 	return { key, label, type: "select", options, ...opts };
+}
+
+export function colorField(
+	key: string,
+	label: string,
+	opts: { required?: boolean } = {},
+): FormField {
+	return { key, label, type: "color", ...opts };
 }
 
 export function datetimeField(

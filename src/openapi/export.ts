@@ -42,7 +42,7 @@ export function buildWireContractOpenApi(): object {
 			version,
 			description:
 				"The contract every ConvStack service implements. Describes the " +
-				"request headers the dashboard proxy injects, the response shapes " +
+				"proof every request carries, the response shapes " +
 				"each section type expects, and the standard error format.",
 		},
 		components: {
@@ -66,6 +66,7 @@ export function buildWireContractOpenApi(): object {
 								"BAD_REQUEST",
 								"VALIDATION_ERROR",
 								"INTERNAL_ERROR",
+								"UNAVAILABLE",
 							],
 						},
 						details: { type: "object" },
@@ -73,26 +74,13 @@ export function buildWireContractOpenApi(): object {
 				},
 			},
 			parameters: {
-				UserId: {
-					name: "X-User-Id",
+				Proof: {
+					name: "Authorization",
 					in: "header",
 					schema: { type: "string" },
 					required: true,
-					description: "Lanyard user id of the requesting user.",
-				},
-				UserPermissions: {
-					name: "X-User-Permissions",
-					in: "header",
-					schema: { type: "string" },
 					description:
-						"Comma-separated service permissions granted to this user.",
-				},
-				UserOrgRoles: {
-					name: "X-User-Org-Roles",
-					in: "header",
-					schema: { type: "string" },
-					description:
-						"JSON array of { orgId, slug, role } the user belongs to.",
+						"Bearer <proof>: an ES256 JWT lanyard signs for this service, checked against lanyard's /.well-known/jwks.json. A user proof (typ convstack-user+jwt) carries sub, name, email, perms and orgs; a service proof (typ convstack-service+jwt) carries sub service:<caller slug> and scope. Both expire 60 seconds after iat.",
 				},
 			},
 		},

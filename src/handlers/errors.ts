@@ -51,10 +51,11 @@ export function errorToResponse(err: unknown): Response {
 		);
 	}
 
-	// Zod validation errors (input parsing or output validation)
+	// Zod validation errors from input parsing. Matched by name, not by
+	// instanceof: a service may carry its own copy of zod.
 	if (
-		err &&
-		typeof err === "object" &&
+		err instanceof Error &&
+		err.name === "ZodError" &&
 		"issues" in err &&
 		Array.isArray((err as { issues: unknown[] }).issues)
 	) {

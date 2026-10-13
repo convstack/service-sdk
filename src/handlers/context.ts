@@ -1,4 +1,4 @@
-import { getRequestUser } from "../auth";
+import type { Principal } from "../proof";
 
 /**
  * The typed context every handler receives via `createHandler`. The TDb
@@ -11,8 +11,9 @@ export interface HandlerContext<TDb = unknown> {
 		id: string;
 		email: string;
 		name: string;
-		role?: string;
 	} | null;
+	/** Set instead of `user` when another service calls with a service proof. */
+	caller: { slug: string; scope: string[] } | null;
 	orgRoles: Array<{ orgId: string; name?: string; slug: string; role: string }>;
 	permissions: string[];
 	/** Raw Request for escape hatches (cookies, custom headers, etc.) */
@@ -20,26 +21,21 @@ export interface HandlerContext<TDb = unknown> {
 }
 
 /**
- * Build a HandlerContext from the proxy-injected headers on the request.
+ * Build a HandlerContext from the principal lanyard's proof names.
  * Called once per request by `createHandler`.
  */
 export function buildHandlerContext<TDb>(
 	request: Request,
 	db: TDb,
+	principal: Principal | null,
 ): HandlerContext<TDb> {
-	const parsed = getRequestUser(request);
+	const user = principal?.kind === "user" ? principal.user : null;
 	return {
 		db,
-		user: parsed
-			? {
-					id: parsed.id,
-					email: parsed.email,
-					name: parsed.name,
-					role: parsed.role,
-				}
-			: null,
-		orgRoles: parsed?.orgRoles ?? [],
-		permissions: parsed?.permissions ?? [],
+		user: user ? { id: user.id, email: user.email, name: user.name } : null,
+		caller: principal?.kind === "service" ? principal.caller : null,
+		orgRoles: user?.orgRoles ?? [],
+		permissions: user?.permissions ?? [],
 		request,
 	};
 }

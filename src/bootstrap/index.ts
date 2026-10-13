@@ -12,7 +12,7 @@ interface BootstrapOptions {
  * then run Drizzle migrations. Fully idempotent — safe to re-run.
  *
  * Service registration with lanyard is done manually via the lanyard admin
- * UI (Services → Create Service). Copy the generated key into your .env as
+ * UI (Services → Register Service). Copy the generated key into your .env as
  * LANYARD_SERVICE_KEY.
  *
  * Usage in a service's scripts/setup.ts:

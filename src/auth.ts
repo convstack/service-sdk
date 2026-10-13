@@ -1,89 +1,90 @@
 /**
- * Authentication and permission utilities for ConvStack services.
- *
- * Services receive user context via proxy headers set by the Dashboard:
- * - X-User-Id: User's unique ID
- * - X-User-Name: User's display name
- * - X-User-Email: User's email
- * - X-User-Role: User's global role ("admin" | "user")
- * - X-User-Permissions: Comma-separated list of granted permissions
- * - X-User-Org-Roles: JSON array of {orgId, slug, role} for department memberships
- * - Authorization: Bearer token or ServiceKey
+ * Request-level checks for raw route handlers. Every request carries a proof
+ * lanyard signed for this service, as `Authorization: Bearer <proof>`: a user
+ * proof when the dashboard proxies a user, a service proof when another
+ * service calls with a grant. createHandler routes get the same answers as
+ * ctx.user and ctx.caller.
  */
 
-export interface RequestUser {
-	id: string;
-	name: string;
-	email: string;
-	role: string;
-	permissions: string[];
-	orgRoles: Array<{ orgId: string; name?: string; slug: string; role: string }>;
+import { checkProof, type RequestUser, type ServiceCaller } from "./proof";
+
+export type { RequestUser, ServiceCaller } from "./proof";
+
+function json(status: number, body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+/** The user behind the request; null without a proof, with a bad one, or for a service. */
+export async function getRequestUser(
+	request: Request,
+): Promise<RequestUser | null> {
+	const proof = await checkProof(request);
+	return proof.ok && proof.principal.kind === "user"
+		? proof.principal.user
+		: null;
 }
 
 /**
- * Extract user context from proxy headers.
- * Returns null if no user ID is present (unauthenticated request).
+ * The user behind the request, for routes only users may call. Otherwise the
+ * response to send: the proof check's 401 or 503, or 401 for a service proof.
  */
-export function getRequestUser(request: Request): RequestUser | null {
-	const id = request.headers.get("x-user-id");
-	if (!id) return null;
-
-	const name = request.headers.get("x-user-name") || "";
-	const email = request.headers.get("x-user-email") || "";
-	const role = request.headers.get("x-user-role") || "user";
-
-	const permHeader = request.headers.get("x-user-permissions");
-	const permissions = permHeader
-		? permHeader
-				.split(",")
-				.map((p) => p.trim())
-				.filter(Boolean)
-		: [];
-
-	let orgRoles: RequestUser["orgRoles"] = [];
-	const orgHeader = request.headers.get("x-user-org-roles");
-	if (orgHeader) {
-		try {
-			orgRoles = JSON.parse(orgHeader);
-		} catch {
-			orgRoles = [];
-		}
+export async function requireUser(
+	request: Request,
+): Promise<RequestUser | Response> {
+	const proof = await checkProof(request);
+	if (!proof.ok) return json(proof.status, { error: proof.error });
+	if (proof.principal.kind !== "user") {
+		return json(401, { error: "Unauthorized" });
 	}
+	return proof.principal.user;
+}
 
-	return { id, name, email, role, permissions, orgRoles };
+/** The calling service, when the request carries a service proof. */
+export async function getRequestCaller(
+	request: Request,
+): Promise<ServiceCaller | null> {
+	const proof = await checkProof(request);
+	return proof.ok && proof.principal.kind === "service"
+		? proof.principal.caller
+		: null;
+}
+
+// a user's permissions, or the scope an admin granted a calling service
+async function grantedPermissions(
+	request: Request,
+): Promise<string[] | Response> {
+	const proof = await checkProof(request);
+	if (!proof.ok) return json(proof.status, { error: proof.error });
+	return proof.principal.kind === "user"
+		? proof.principal.user.permissions
+		: proof.principal.caller.scope;
 }
 
 /**
  * Check if the request has a specific permission.
  */
-export function hasPermission(request: Request, permission: string): boolean {
-	const user = getRequestUser(request);
-	if (!user) return false;
-	return user.permissions.includes(permission);
+export async function hasPermission(
+	request: Request,
+	permission: string,
+): Promise<boolean> {
+	const granted = await grantedPermissions(request);
+	return !(granted instanceof Response) && granted.includes(permission);
 }
 
 /**
  * Require a specific permission. Returns an error Response if missing, null if granted.
  */
-export function requirePermission(
+export async function requirePermission(
 	request: Request,
 	permission: string,
-): Response | null {
-	const user = getRequestUser(request);
-	if (!user) {
-		return new Response(JSON.stringify({ error: "Unauthorized" }), {
-			status: 401,
-			headers: { "Content-Type": "application/json" },
-		});
-	}
-	if (!user.permissions.includes(permission)) {
-		return new Response(
-			JSON.stringify({
-				error: "Forbidden",
-				required: permission,
-			}),
-			{ status: 403, headers: { "Content-Type": "application/json" } },
-		);
+): Promise<Response | null> {
+	const granted = await grantedPermissions(request);
+	if (granted instanceof Response) return granted;
+	if (!granted.includes(permission)) {
+		return json(403, { error: "Forbidden", required: permission });
 	}
 	return null;
 }
@@ -91,97 +92,14 @@ export function requirePermission(
 /**
  * Require any one of the listed permissions.
  */
-export function requireAnyPermission(
+export async function requireAnyPermission(
 	request: Request,
 	permissions: string[],
-): Response | null {
-	const user = getRequestUser(request);
-	if (!user) {
-		return new Response(JSON.stringify({ error: "Unauthorized" }), {
-			status: 401,
-			headers: { "Content-Type": "application/json" },
-		});
-	}
-	if (!permissions.some((p) => user.permissions.includes(p))) {
-		return new Response(
-			JSON.stringify({
-				error: "Forbidden",
-				required: permissions,
-			}),
-			{ status: 403, headers: { "Content-Type": "application/json" } },
-		);
+): Promise<Response | null> {
+	const granted = await grantedPermissions(request);
+	if (granted instanceof Response) return granted;
+	if (!permissions.some((p) => granted.includes(p))) {
+		return json(403, { error: "Forbidden", required: permissions });
 	}
 	return null;
-}
-
-// --- ServiceKey auth (for service-to-service calls) ---
-
-const verifiedKeys = new Map<string, { valid: boolean; expires: number }>();
-const KEY_CACHE_TTL = 5 * 60 * 1000;
-
-/**
- * Validate a ServiceKey by forwarding it to Lanyard's heartbeat endpoint.
- * Caches results for 5 minutes.
- */
-export async function validateServiceKey(request: Request): Promise<boolean> {
-	const auth = request.headers.get("authorization");
-	if (!auth?.startsWith("ServiceKey ")) return false;
-
-	const cached = verifiedKeys.get(auth);
-	if (cached && cached.expires > Date.now()) {
-		return cached.valid;
-	}
-
-	const lanyardUrl = process.env.LANYARD_URL || "http://localhost:3000";
-
-	try {
-		const res = await fetch(`${lanyardUrl}/api/services/heartbeat`, {
-			method: "POST",
-			headers: {
-				Authorization: auth,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ status: "healthy" }),
-			signal: AbortSignal.timeout(3000),
-		});
-
-		const valid = res.ok;
-		verifiedKeys.set(auth, {
-			valid,
-			expires: Date.now() + KEY_CACHE_TTL,
-		});
-		return valid;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Require a valid ServiceKey. Returns error Response if invalid, null if valid.
- */
-export async function requireServiceKey(
-	request: Request,
-): Promise<Response | null> {
-	const valid = await validateServiceKey(request);
-	if (!valid) {
-		return new Response(
-			JSON.stringify({ error: "Invalid or missing ServiceKey" }),
-			{ status: 401, headers: { "Content-Type": "application/json" } },
-		);
-	}
-	return null;
-}
-
-/**
- * Require either a valid ServiceKey OR a specific permission.
- * Use this on endpoints that both admin users and external services need.
- */
-export async function requireServiceOrPermission(
-	request: Request,
-	permission: string,
-): Promise<Response | null> {
-	const isService = await validateServiceKey(request);
-	if (isService) return null;
-
-	return requirePermission(request, permission);
 }

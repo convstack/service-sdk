@@ -30,6 +30,6 @@
 		}
 	},
 	"files": {
-		"includes": ["src/**"]
+		"includes": ["src/**", "tests/**", "vitest.config.ts"]
 	}
 }

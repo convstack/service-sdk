@@ -32,6 +32,14 @@ export function requirePermission<TDb>(
 	ctx: HandlerContext<TDb>,
 	permission: string,
 ) {
+	if (ctx.caller) {
+		if (!ctx.caller.scope.includes(permission)) {
+			throw httpError.forbidden(
+				`The "${permission}" permission is required. Ask a lanyard admin to grant it to ${ctx.caller.slug} under Allowed Callers.`,
+			);
+		}
+		return;
+	}
 	requireAuth(ctx);
 	if (!ctx.permissions.includes(permission)) {
 		throw httpError.forbidden(
@@ -44,6 +52,15 @@ export function requireAnyPermission<TDb>(
 	ctx: HandlerContext<TDb>,
 	permissions: string[],
 ) {
+	if (ctx.caller) {
+		const scope = ctx.caller.scope;
+		if (!permissions.some((p) => scope.includes(p))) {
+			throw httpError.forbidden(
+				`One of these permissions is required: ${permissions.join(", ")}`,
+			);
+		}
+		return;
+	}
 	requireAuth(ctx);
 	if (!permissions.some((p) => ctx.permissions.includes(p))) {
 		throw httpError.forbidden(

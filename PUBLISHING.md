@@ -18,14 +18,14 @@ For the maintainer(s). mostly faye.
 Bump both packages together (patch / minor / major):
 
 ```bash
-cd G:/git/headpat/convention-apps/service-sdk  && bun version patch
-cd G:/git/headpat/convention-apps/create-service && bun version patch
+cd D:/git/headpat/convention-apps/service-sdk && bun pm version patch
+cd D:/git/headpat/convention-apps/create-service && bun pm version patch
 ```
 
 ### 2. Build create-service CLI
 
 ```bash
-cd G:/git/headpat/convention-apps/create-service && bun run build
+cd D:/git/headpat/convention-apps/create-service && bun run build
 ```
 
 Outputs `dist/cli.js`. This is what npm ships.
@@ -33,7 +33,7 @@ Outputs `dist/cli.js`. This is what npm ships.
 ### 3. Refresh OpenAPI artifacts
 
 ```bash
-cd G:/git/headpat/convention-apps/service-sdk && bun run openapi:export
+cd D:/git/headpat/convention-apps/service-sdk && bun run openapi:export
 ```
 
 Updates `dist/manifest.schema.json` and `dist/wire-contract.openapi.json`.
@@ -41,8 +41,8 @@ Updates `dist/manifest.schema.json` and `dist/wire-contract.openapi.json`.
 ### 4. Publish
 
 ```bash
-cd G:/git/headpat/convention-apps/service-sdk  && bun publish
-cd G:/git/headpat/convention-apps/create-service && bun publish
+cd D:/git/headpat/convention-apps/service-sdk  && bun publish
+cd D:/git/headpat/convention-apps/create-service && bun publish
 ```
 
 `prepublishOnly` runs typecheck + openapi:export automatically for `service-sdk`.
